@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from src import db
 from src.auth import UserContext, get_current_user
-from src.config import settings
+from src.config import get_public_url, settings
 from src.mcp_handler import (
     MCP_PROTOCOL_VERSION,
     active_sessions,
@@ -42,6 +42,7 @@ async def root():
     db_status = await db.check_connection()
     return {
         "name": "Enterprise MySQL Analytics MCP Server",
+        "public_url": get_public_url(),
         "status": "online",
         "access": "Public (No authentication required)",
         "protocolVersion": MCP_PROTOCOL_VERSION,
