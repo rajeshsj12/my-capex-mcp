@@ -64,3 +64,4 @@ INSERT INTO user_records (user_id, category, title, content, metadata) VALUES
     (2, 'sales', 'Enterprise Client Pipeline', 'Acme Corp negotiation: $85,000 ARR contract pending final legal approval.', '{"stage": "closing", "probability": 0.9}'),
     (2, 'notes', 'Bob Architecture Research', 'Benchmarked pgvector vs Pinecone for semantic product catalog search.', '{"tags": ["db", "ai", "vector"]}')
 ON CONFLICT DO NOTHING;
+
