@@ -3,7 +3,6 @@ from typing import Optional
 from fastapi import Header, Query, HTTPException, Security
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from src.config import settings
-from src import db
 
 security_scheme = HTTPBearer(auto_error=False)
 
@@ -13,6 +12,7 @@ class UserContext:
     username: str
     role: str
     key_name: str = "default"
+    allowed_databases: Optional[list] = None
 
     @property
     def is_admin(self) -> bool:
@@ -20,43 +20,40 @@ class UserContext:
 
 async def resolve_user(api_key: str) -> Optional[UserContext]:
     """
-    Validates the provided API key against Master Key or the database api_keys table.
+    Validates the provided API key against configured multi-user credentials.
     """
     if not api_key:
         return None
 
-    # 1. Check Master / Admin API key fallback
+    # 1. Master / Admin Key
     if settings.MASTER_API_KEY and api_key == settings.MASTER_API_KEY:
         return UserContext(
-            user_id=3,
+            user_id=1,
             username="admin",
             role="admin",
-            key_name="master_admin_key"
+            key_name="master_admin_key",
+            allowed_databases=["capex", "world", "sakila"]
         )
 
-    # 2. Check Database API Keys
-    try:
-        query = """
-            SELECT k.name as key_name, k.is_active, u.id as user_id, u.username, u.role
-            FROM api_keys k
-            JOIN users u ON k.user_id = u.id
-            WHERE k.api_key = $1 AND k.is_active = TRUE
-            LIMIT 1;
-        """
-        row = await db.fetch_one(query, api_key)
-        if row:
-            return UserContext(
-                user_id=row["user_id"],
-                username=row["username"],
-                role=row["role"],
-                key_name=row["key_name"]
-            )
-    except Exception as e:
-        # If DB is not reachable or tables not yet seeded, check mock/demo fallback keys
-        if api_key == "mcp_alice_sec_101":
-            return UserContext(user_id=1, username="alice", role="member", key_name="Alice Demo Key")
-        elif api_key == "mcp_bob_sec_202":
-            return UserContext(user_id=2, username="bob", role="member", key_name="Bob Demo Key")
+    # 2. Alice Key (Financial / Capex Analyst)
+    if settings.ALICE_API_KEY and api_key == settings.ALICE_API_KEY:
+        return UserContext(
+            user_id=2,
+            username="alice",
+            role="analyst",
+            key_name="Alice Capex Analyst Key",
+            allowed_databases=["capex", "world"]
+        )
+
+    # 3. Bob Key (General / World Analyst)
+    if settings.BOB_API_KEY and api_key == settings.BOB_API_KEY:
+        return UserContext(
+            user_id=3,
+            username="bob",
+            role="analyst",
+            key_name="Bob World Analyst Key",
+            allowed_databases=["world", "sakila"]
+        )
 
     return None
 
@@ -83,7 +80,7 @@ async def get_current_user(
     if not token:
         raise HTTPException(
             status_code=401,
-            detail="Unauthorized: Missing API key. Pass 'Authorization: Bearer <KEY>' or 'X-API-Key: <KEY>' header."
+            detail="Unauthorized: Missing API key. Provide 'Authorization: Bearer <KEY>' or 'X-API-Key: <KEY>' header."
         )
 
     user = await resolve_user(token)

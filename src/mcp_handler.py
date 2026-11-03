@@ -11,7 +11,6 @@ logger = logging.getLogger("mcp-server")
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
 
-# Active SSE sessions (Session ID -> asyncio.Queue)
 active_sessions: Dict[str, asyncio.Queue] = {}
 session_users: Dict[str, UserContext] = {}
 
@@ -24,7 +23,6 @@ async def process_jsonrpc_request(request: Dict[str, Any], user: UserContext) ->
     method = request.get("method")
     params = request.get("params", {}) or {}
 
-    # Notifications don't have an ID and expect no response
     if not req_id and method and method.startswith("notifications/"):
         logger.info(f"Received notification: {method}")
         return None
@@ -46,12 +44,12 @@ async def process_jsonrpc_request(request: Dict[str, Any], user: UserContext) ->
                     "resources": {}
                 },
                 "serverInfo": {
-                    "name": "multi-user-postgres-mcp",
+                    "name": "multi-user-mysql-mcp",
                     "version": "1.0.0"
                 },
                 "instructions": (
                     f"Connected as {user.username} (Role: {user.role}). "
-                    "You have private access to query and manage your isolated database records."
+                    f"Accessible databases: {user.allowed_databases or ['all']}."
                 )
             })
 
@@ -92,35 +90,33 @@ async def process_jsonrpc_request(request: Dict[str, Any], user: UserContext) ->
                 })
 
         elif method == "resources/list":
-            return make_response({
-                "resources": [
-                    {
-                        "uri": f"postgres://user/{user.user_id}/records",
-                        "name": f"{user.username}'s Database Records",
-                        "description": "Live private records for the authenticated user",
-                        "mimeType": "application/json"
-                    }
-                ]
-            })
+            dbs = user.allowed_databases or ["capex"]
+            resources = []
+            for d in dbs:
+                resources.append({
+                    "uri": f"mysql://{d}",
+                    "name": f"Database: {d}",
+                    "description": f"Live tables in MySQL database '{d}'",
+                    "mimeType": "application/json"
+                })
+            return make_response({"resources": resources})
 
         elif method == "resources/read":
             uri = params.get("uri", "")
-            if uri == f"postgres://user/{user.user_id}/records":
-                records = await db.fetch_all(
-                    "SELECT id, category, title, content, metadata, created_at FROM user_records WHERE user_id = $1 LIMIT 50",
-                    user.user_id
-                )
+            if uri.startswith("mysql://"):
+                target_db = uri.replace("mysql://", "").strip()
+                tables = await db.fetch_all(f"SHOW TABLES FROM `{target_db}`;")
                 return make_response({
                     "contents": [
                         {
                             "uri": uri,
                             "mimeType": "application/json",
-                            "text": json.dumps(records, indent=2)
+                            "text": json.dumps([list(t.values())[0] for t in tables], indent=2)
                         }
                     ]
                 })
             else:
-                return make_response(error={"code": -32602, "message": f"Resource not found or unauthorized: {uri}"})
+                return make_response(error={"code": -32602, "message": f"Resource not found: {uri}"})
 
         else:
             return make_response(error={"code": -32601, "message": f"Method not found: {method}"})
@@ -138,19 +134,14 @@ async def sse_event_stream(session_id: str, user: UserContext, request_url_prefi
     session_users[session_id] = user
 
     try:
-        # Step 1: Send endpoint event telling the client where to POST messages
-        # Include session_id in the target URI
         endpoint_url = f"{request_url_prefix}/messages?sessionId={session_id}"
         yield f"event: endpoint\ndata: {endpoint_url}\n\n"
 
-        # Step 2: Stream loop
         while True:
             try:
-                # Wait for queued messages or send a keepalive ping every 10 seconds
                 msg = await asyncio.wait_for(queue.get(), timeout=10.0)
                 yield f"event: message\ndata: {json.dumps(msg)}\n\n"
             except asyncio.TimeoutError:
-                # Keep-alive comment to keep connection alive in serverless/proxies
                 yield ": keep-alive\n\n"
     except asyncio.CancelledError:
         logger.info(f"SSE client {session_id} disconnected.")

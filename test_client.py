@@ -1,5 +1,5 @@
 """
-Test script for Multi-User MCP Server.
+Test script for Multi-User MySQL MCP Server.
 Works against local development server (http://127.0.0.1:8000)
 or deployed Vercel URL (https://your-app.vercel.app).
 """
@@ -48,7 +48,7 @@ def run_tests():
     print(f"    Status: {status} (Expected: 401)")
     print(f"    Response: {res}\n")
 
-    # 3. Test User Alice
+    # 3. Test User Alice (Capex / Financial Analyst)
     alice_headers = {"Authorization": "Bearer mcp_alice_sec_101"}
     print("[3] Testing User Alice (API Key: mcp_alice_sec_101)...")
     
@@ -71,34 +71,34 @@ def run_tests():
     tools = [t["name"] for t in res.get("result", {}).get("tools", [])]
     print(f"    Available Tools ({len(tools)}): {tools}")
 
-    # 3c. Call get_my_profile
+    # 3c. List Tables in Capex
     status, res = make_request("/mcp", data={
         "jsonrpc": "2.0",
         "id": 12,
         "method": "tools/call",
-        "params": {"name": "get_my_profile", "arguments": {}}
+        "params": {"name": "list_tables", "arguments": {"database": "capex"}}
     }, headers=alice_headers, method="POST")
-    print(f"    Alice Profile: {res.get('result', {}).get('content', [{}])[0].get('text')}")
+    print(f"    Alice List Tables: {res.get('result', {}).get('content', [{}])[0].get('text')}")
 
-    # 3d. Call fetch_user_records
+    # 3d. Fetch Table Records from dim_asset
     status, res = make_request("/mcp", data={
         "jsonrpc": "2.0",
         "id": 13,
         "method": "tools/call",
-        "params": {"name": "fetch_user_records", "arguments": {}}
+        "params": {"name": "fetch_table_records", "arguments": {"table_name": "dim_asset", "database": "capex", "limit": 2}}
     }, headers=alice_headers, method="POST")
-    print(f"    Alice Records: {res.get('result', {}).get('content', [{}])[0].get('text')}\n")
+    print(f"    Alice dim_asset sample: {res.get('result', {}).get('content', [{}])[0].get('text')}\n")
 
-    # 4. Test User Bob (Tenant Isolation check)
+    # 4. Test User Bob (World Analyst)
     bob_headers = {"Authorization": "Bearer mcp_bob_sec_202"}
     print("[4] Testing User Bob (API Key: mcp_bob_sec_202)...")
     status, res = make_request("/mcp", data={
         "jsonrpc": "2.0",
         "id": 20,
         "method": "tools/call",
-        "params": {"name": "fetch_user_records", "arguments": {}}
+        "params": {"name": "fetch_table_records", "arguments": {"table_name": "country", "database": "world", "limit": 2}}
     }, headers=bob_headers, method="POST")
-    print(f"    Bob Records: {res.get('result', {}).get('content', [{}])[0].get('text')}\n")
+    print(f"    Bob world country sample: {res.get('result', {}).get('content', [{}])[0].get('text')}\n")
 
     print("=== All Test Verifications Completed ===")
 

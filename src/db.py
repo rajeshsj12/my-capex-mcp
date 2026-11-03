@@ -1,96 +1,118 @@
-import json
+import asyncio
 import logging
+import socket
+from decimal import Decimal
+import datetime
 from typing import Any, Dict, List, Optional
-import asyncpg
-from src.config import settings
+import aiomysql
+from src.config import get_db_credentials
 
 logger = logging.getLogger("mcp-server")
 
-_pool: Optional[asyncpg.Pool] = None
+_pool: Optional[aiomysql.Pool] = None
 
-def _clean_database_url(url: str) -> tuple[str, bool]:
-    """
-    Parses DATABASE_URL to make it asyncpg compatible.
-    asyncpg does not accept ?sslmode=... in the connection string directly;
-    instead it expects ssl=True or ssl='require' parameter.
-    """
-    use_ssl = False
-    if "sslmode=require" in url:
-        url = url.replace("?sslmode=require", "").replace("&sslmode=require", "")
-        use_ssl = True
-    elif "ssl=true" in url.lower():
-        url = url.replace("?ssl=true", "").replace("&ssl=true", "")
-        use_ssl = True
-    return url, use_ssl
+def _serialize_value(val: Any) -> Any:
+    """Recursively serialize MySQL types (Decimal, datetime, bytes) to JSON-compatible types."""
+    if isinstance(val, Decimal):
+        return float(val)
+    elif isinstance(val, (datetime.date, datetime.datetime)):
+        return val.isoformat()
+    elif isinstance(val, bytes):
+        try:
+            return val.decode("utf-8")
+        except UnicodeDecodeError:
+            return str(val)
+    elif isinstance(val, dict):
+        return {k: _serialize_value(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [_serialize_value(v) for v in val]
+    return val
 
-async def get_db_pool() -> asyncpg.Pool:
-    """Returns or initializes the asyncpg connection pool."""
+def _resolve_host(hostname: str) -> str:
+    """Resolves DNS hostname to IP address to ensure reliable connection with tunnels."""
+    try:
+        return socket.gethostbyname(hostname)
+    except Exception:
+        return hostname
+
+async def get_db_pool() -> aiomysql.Pool:
+    """Returns or initializes the aiomysql connection pool."""
     global _pool
-    if _pool is not None and not _pool._closed:
+    if _pool is not None and not _pool.closed:
         return _pool
 
-    if not settings.DATABASE_URL:
-        raise ValueError("DATABASE_URL environment variable is not configured.")
-
-    clean_url, use_ssl = _clean_database_url(settings.DATABASE_URL)
+    creds = get_db_credentials()
+    resolved_ip = _resolve_host(creds["host"])
     
-    # In serverless environments, keep min_size small to avoid exhausting DB connections
-    ssl_param = "require" if use_ssl else None
-    
-    _pool = await asyncpg.create_pool(
-        dsn=clean_url,
-        min_size=1,
-        max_size=5,
-        command_timeout=15,
-        ssl=ssl_param
+    _pool = await aiomysql.create_pool(
+        host=resolved_ip,
+        port=creds["port"],
+        user=creds["user"],
+        password=creds["password"],
+        db=creds["db"],
+        minsize=1,
+        maxsize=5,
+        connect_timeout=10,
+        autocommit=True
     )
     return _pool
 
 async def check_connection() -> Dict[str, Any]:
     """Health check for database connectivity."""
-    if not settings.DATABASE_URL:
-        return {"connected": False, "error": "DATABASE_URL not set"}
+    creds = get_db_credentials()
     try:
         pool = await get_db_pool()
         async with pool.acquire() as conn:
-            val = await conn.fetchval("SELECT 1")
-            return {"connected": val == 1, "provider": "PostgreSQL"}
+            async with conn.cursor(aiomysql.DictCursor) as cur:
+                await cur.execute("SELECT 1 AS alive, DATABASE() AS active_db, VERSION() AS mysql_version;")
+                res = await cur.fetchone()
+                return {
+                    "connected": True,
+                    "engine": "MySQL",
+                    "host": creds["host"],
+                    "port": creds["port"],
+                    "active_database": res.get("active_db"),
+                    "version": res.get("mysql_version")
+                }
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-        return {"connected": False, "error": str(e)}
+        return {
+            "connected": False,
+            "engine": "MySQL",
+            "host": creds["host"],
+            "port": creds["port"],
+            "error": str(e)
+        }
 
-async def fetch_all(query: str, *args) -> List[Dict[str, Any]]:
-    """Execute a query and return all rows as dictionaries."""
+async def fetch_all(query: str, params: Optional[tuple] = None) -> List[Dict[str, Any]]:
+    """Execute a query and return all rows as dictionaries with serialized types."""
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        records = await conn.fetch(query, *args)
-        results = []
-        for r in records:
-            row_dict = dict(r)
-            # Serialize JSON / JSONB fields if needed
-            for k, v in row_dict.items():
-                if isinstance(v, (dict, list)):
-                    pass
-                elif hasattr(v, "isoformat"):
-                    row_dict[k] = v.isoformat()
-            results.append(row_dict)
-        return results
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(query, params or ())
+            rows = await cur.fetchall()
+            return [_serialize_value(row) for row in rows]
 
-async def fetch_one(query: str, *args) -> Optional[Dict[str, Any]]:
+async def fetch_one(query: str, params: Optional[tuple] = None) -> Optional[Dict[str, Any]]:
     """Execute a query and return a single row as a dictionary."""
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        record = await conn.fetchrow(query, *args)
-        if not record:
-            return None
-        row_dict = dict(record)
-        for k, v in row_dict.items():
-            if hasattr(v, "isoformat"):
-                row_dict[k] = v.isoformat()
-        return row_dict
+        async with conn.cursor(aiomysql.DictCursor) as cur:
+            await cur.execute(query, params or ())
+            row = await cur.fetchone()
+            return _serialize_value(row) if row else None
 
-async def execute(query: str, *args) -> str:
-    """Execute an INSERT/UPDATE/DELETE query and return status."""
+async def execute(query: str, params: Optional[tuple] = None) -> int:
+    """Execute an INSERT/UPDATE/DELETE query and return affected rows."""
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        return await conn.execute(query, *args)
+        async with conn.cursor() as cur:
+            affected = await cur.execute(query, params or ())
+            return affected
+
+async def close_pool():
+    """Gracefully close connection pool."""
+    global _pool
+    if _pool is not None and not _pool.closed:
+        _pool.close()
+        await _pool.wait_closed()
