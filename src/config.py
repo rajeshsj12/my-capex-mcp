@@ -1,14 +1,18 @@
 import os
+from typing import Any
 from urllib.parse import urlparse
 
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    # Database Settings
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
-    DB_HOST: str = os.getenv("DB_HOST", "127.0.0.1")
-    DB_PORT: int = int(os.getenv("DB_PORT", 3306))
+    # Online Tunnel Database Settings (Default)
+    DATABASE_URL: str = os.getenv(
+        "DATABASE_URL",
+        "mysql://root:password@upkbh-106-192-73-56.run.pinggy-free.link:34659/capex",
+    )
+    DB_HOST: str = os.getenv("DB_HOST", "upkbh-106-192-73-56.run.pinggy-free.link")
+    DB_PORT: int = int(os.getenv("DB_PORT", "34659"))
     DB_USER: str = os.getenv("DB_USER", "root")
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "password")
     DB_NAME: str = os.getenv("DB_NAME", "capex")
@@ -29,28 +33,30 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def get_db_credentials():
+def get_db_credentials() -> dict[str, Any]:
     """
-    Returns database credentials.
-    Supports local MySQL (127.0.0.1:3306) or remote tunnel DATABASE_URL.
+    Returns database credentials targeting the online Pinggy tunnel exclusively.
+    Handles 'tcp://' and 'cp://' prefixes automatically.
     """
     url = settings.DATABASE_URL
     if url.startswith("tcp://"):
         url = "mysql://" + url[len("tcp://") :]
+    elif url.startswith("cp://"):
+        url = "mysql://" + url[len("cp://") :]
 
     if url and (url.startswith(("mysql://", "mysql+aiomysql://"))):
         parsed = urlparse(url)
         return {
             "host": parsed.hostname or settings.DB_HOST,
-            "port": parsed.port or settings.DB_PORT or 3306,
+            "port": parsed.port or settings.DB_PORT or 34659,
             "user": parsed.username or settings.DB_USER,
             "password": parsed.password or settings.DB_PASSWORD,
             "db": (parsed.path.lstrip("/") if parsed.path else "") or settings.DB_NAME or "capex",
         }
 
     return {
-        "host": settings.DB_HOST or "127.0.0.1",
-        "port": settings.DB_PORT or 3306,
+        "host": settings.DB_HOST or "upkbh-106-192-73-56.run.pinggy-free.link",
+        "port": settings.DB_PORT or 34659,
         "user": settings.DB_USER or "root",
         "password": settings.DB_PASSWORD or "password",
         "db": settings.DB_NAME or "capex",
