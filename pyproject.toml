@@ -5,6 +5,7 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 ignore = [
+    "E402",   # Module level import not at top of file (needed for sys.path on Vercel)
     "E501",   # Line length for SQL queries and docstrings
     "B008",   # FastAPI Depends/Security in argument defaults
     "SIM117", # Nested with statements

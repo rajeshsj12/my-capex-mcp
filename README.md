@@ -52,8 +52,8 @@ This server implements:
    - `MASTER_API_KEY`: `mcp_admin_sec_999`
    - `ALICE_API_KEY`: `mcp_alice_sec_101`
    - `BOB_API_KEY`: `mcp_bob_sec_202`
-4. Click **Deploy**. Vercel will build and assign you a live HTTPS domain:
-   `https://your-mcp-app.vercel.app`
+4. Click **Deploy**. Vercel will build and assign you your live HTTPS domain:
+   `https://capex-mcp.vercel.app`
 
 > [!NOTE]
 > **About Pinggy Free Links**: Pinggy free tunnels stay active as long as the tunnel command on your host is running. If you ever restart the tunnel and receive a new port/hostname, update `DATABASE_URL` in your `.env` (locally) or in the **Vercel Project Settings > Environment Variables** without needing to touch code!
@@ -62,14 +62,10 @@ This server implements:
 
 ## 🧪 Testing the MCP Server
 
-Run `test_client.py` against your local development server or live Vercel URL:
+Run `test_client.py` against your deployed Vercel URL:
 
 ```bash
-# Against local server:
-python test_client.py http://127.0.0.1:8000
-
-# Against deployed Vercel URL:
-python test_client.py https://your-mcp-app.vercel.app
+python test_client.py https://capex-mcp.vercel.app
 ```
 
 ---
@@ -87,9 +83,7 @@ In `%APPDATA%\Claude\claude_desktop_config.json`:
       "args": [
         "-y",
         "mcp-remote",
-        "https://your-mcp-app.vercel.app/sse",
-        "--header",
-        "Authorization: Bearer mcp_alice_sec_101"
+        "https://capex-mcp.vercel.app/sse"
       ]
     }
   }
@@ -100,7 +94,7 @@ In `%APPDATA%\Claude\claude_desktop_config.json`:
 In **Settings > Features > MCP Servers > Add New MCP Server**:
 - **Name**: `Capex MySQL MCP`
 - **Type**: `SSE`
-- **URL**: `https://your-mcp-app.vercel.app/sse?api_key=mcp_alice_sec_101`
+- **URL**: `https://capex-mcp.vercel.app/sse`
 
 ---
 
