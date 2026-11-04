@@ -1,10 +1,14 @@
+from __future__ import annotations
+
 import os
 import sys
 
-# Ensure project root is in sys.path so 'src' is discoverable in Vercel Serverless
-ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if ROOT_DIR not in sys.path:
-    sys.path.insert(0, ROOT_DIR)
+# Ensure both project root and 'api' directory are in sys.path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.abspath(os.path.join(CURRENT_DIR, ".."))
+for p in [CURRENT_DIR, ROOT_DIR]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
 
 import logging
 import uuid
