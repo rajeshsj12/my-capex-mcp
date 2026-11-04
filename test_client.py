@@ -44,6 +44,10 @@ def run_tests():
     print("[1] Checking Public Root Endpoint...")
     status, res = make_request("/")
     print(f"    Status: {status}")
+    if status != 200 or not isinstance(res, dict):
+        print(f"    Server Error Response: {res}\n")
+        print("[-] Server returned an error. Please verify the server is deployed and running.")
+        return
     print(f"    Access Mode: {res.get('access')}")
     print(f"    Database Status: {res.get('database')}\n")
 
