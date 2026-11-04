@@ -1,11 +1,13 @@
 import os
 from typing import Any
 from urllib.parse import urlparse
-
 from pydantic_settings import BaseSettings
 
-
 class Settings(BaseSettings):
+    # Vercel Deployment Public URL
+    VERCEL_URL: str = os.getenv("VERCEL_URL", "")
+    MCP_PUBLIC_URL: str = os.getenv("MCP_PUBLIC_URL", "")
+
     # Vercel Deployment Public URL
     VERCEL_URL: str = os.getenv("VERCEL_URL", "")
     MCP_PUBLIC_URL: str = os.getenv("MCP_PUBLIC_URL", "")
@@ -33,9 +35,16 @@ class Settings(BaseSettings):
         env_file = ".env"
         extra = "ignore"
 
-
 settings = Settings()
 
+def get_public_url() -> str:
+    """Returns the public base URL of the deployed MCP server."""
+    url = settings.MCP_PUBLIC_URL or settings.VERCEL_URL
+    if not url:
+        return "http://localhost:8000"
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return url.rstrip("/")
 
 def get_public_url() -> str:
     """Returns the public base URL of the deployed MCP server."""
