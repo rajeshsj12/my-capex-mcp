@@ -264,23 +264,23 @@ async def handle_stateless_mcp(
     }
 
 
-@app.api_route("/sse", methods=["GET", "HEAD", "OPTIONS"])
-@app.api_route("/api/sse", methods=["GET", "HEAD", "OPTIONS"])
+@app.api_route("/sse", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/sse", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def handle_sse(
     request: Request,
     user: UserContext = Depends(get_current_user),
 ):
     """
     Server-Sent Events connection endpoint.
-    Publicly accessible.
+    Also handles HTTP JSON-RPC POST requests for streamable HTTP transports like mcp-remote.
     """
     if request.method == "OPTIONS":
         return Response(
             status_code=200,
             headers={
-                "Allow": "GET, HEAD, OPTIONS",
+                "Allow": "GET, POST, HEAD, OPTIONS",
                 "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
                 "Access-Control-Allow-Headers": "*",
             },
         )
@@ -290,6 +290,22 @@ async def handle_sse(
             status_code=500,
             content={"error": "Startup error", "traceback": _startup_error},
         )
+
+    # Support Streamable HTTP / JSON-RPC fallback
+    if request.method == "POST":
+        body = await _extract_json_body(request)
+        if isinstance(body, dict) and "jsonrpc" in body:
+            res = await process_jsonrpc_request(body, user)
+            if res is None:
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return res
+        elif isinstance(body, list) and len(body) > 0:
+            results = []
+            for req in body:
+                r = await process_jsonrpc_request(req, user)
+                if r is not None:
+                    results.append(r)
+            return results
 
     if request.method == "HEAD":
         return Response(
@@ -373,7 +389,9 @@ async def handle_messages(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
 )
-async def catch_all_fallback(request: Request):
+async def catch_all_fallback(
+    request: Request, user: UserContext = Depends(get_current_user)
+):
     """
     Fallback route to ensure no method or path returns 405 or 404 when probed by automated connectors.
     """
@@ -387,6 +405,22 @@ async def catch_all_fallback(request: Request):
                 "Access-Control-Allow-Headers": "*",
             },
         )
+
+    if request.method == "POST":
+        body = await _extract_json_body(request)
+        if isinstance(body, dict) and "jsonrpc" in body:
+            res = await process_jsonrpc_request(body, user)
+            if res is None:
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return res
+        elif isinstance(body, list) and len(body) > 0:
+            results = []
+            for req in body:
+                r = await process_jsonrpc_request(req, user)
+                if r is not None:
+                    results.append(r)
+            return results
+
     return JSONResponse(
         status_code=200,
         content={
