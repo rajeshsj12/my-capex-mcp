@@ -15,10 +15,12 @@ class Settings(BaseSettings):
     # Online Tunnel Database Settings (Default)
     DATABASE_URL: str = os.getenv(
         "DATABASE_URL",
-        "mysql://root:password@upkbh-106-192-73-56.run.pinggy-free.link:34659/capex",
+        "mysql://root:password@wrlup-2406-7400-ce-6c52-6cce-95cf-ab3d-7ad8.run.pinggy-free.link:40835/capex",
     )
-    DB_HOST: str = os.getenv("DB_HOST", "upkbh-106-192-73-56.run.pinggy-free.link")
-    DB_PORT: int = int(os.getenv("DB_PORT", "34659"))
+    DB_HOST: str = os.getenv(
+        "DB_HOST", "wrlup-2406-7400-ce-6c52-6cce-95cf-ab3d-7ad8.run.pinggy-free.link"
+    )
+    DB_PORT: int = int(os.getenv("DB_PORT", "40835"))
     DB_USER: str = os.getenv("DB_USER", "root")
     DB_PASSWORD: str = os.getenv("DB_PASSWORD", "password")
     DB_NAME: str = os.getenv("DB_NAME", "capex")
@@ -64,15 +66,16 @@ def get_db_credentials() -> dict[str, Any]:
         parsed = urlparse(url)
         return {
             "host": parsed.hostname or settings.DB_HOST,
-            "port": parsed.port or settings.DB_PORT or 34659,
+            "port": parsed.port or settings.DB_PORT or 40835,
             "user": parsed.username or settings.DB_USER,
             "password": parsed.password or settings.DB_PASSWORD,
             "db": (parsed.path.lstrip("/") if parsed.path else "") or settings.DB_NAME or "capex",
         }
 
     return {
-        "host": settings.DB_HOST or "upkbh-106-192-73-56.run.pinggy-free.link",
-        "port": settings.DB_PORT or 34659,
+        "host": settings.DB_HOST
+        or "wrlup-2406-7400-ce-6c52-6cce-95cf-ab3d-7ad8.run.pinggy-free.link",
+        "port": settings.DB_PORT or 40835,
         "user": settings.DB_USER or "root",
         "password": settings.DB_PASSWORD or "password",
         "db": settings.DB_NAME or "capex",
