@@ -1,16 +1,9 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
-
-# Ensure both project root and 'api' directory are in sys.path
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(CURRENT_DIR)
-for p in [CURRENT_DIR, ROOT_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-import logging
+import traceback
 import uuid
 from typing import Any
 
@@ -18,21 +11,7 @@ from fastapi import Depends, FastAPI, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from src import db
-from src.auth import UserContext, get_current_user
-from src.config import get_public_url, settings
-from src.mcp_handler import (
-    MCP_PROTOCOL_VERSION,
-    active_sessions,
-    process_jsonrpc_request,
-    session_users,
-    sse_event_stream,
-)
-
-logging.basicConfig(level=logging.INFO if not settings.DEBUG else logging.DEBUG)
-logger = logging.getLogger("mcp-server")
-
-# TOP-LEVEL FastAPI instance (Required by Vercel static analyzer)
+# TOP-LEVEL FastAPI instance (Required by Vercel static analyzer at column 0)
 app = FastAPI(
     title="Enterprise MySQL Analytics MCP Server",
     description="Open public Model Context Protocol Server with comprehensive business intelligence and Q&A tools.",
@@ -49,6 +28,54 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    """
+    Capture any unhandled server error and return detailed JSON diagnostics
+    instead of an opaque Vercel 500 FUNCTION_INVOCATION_FAILED.
+    """
+    err_trace = traceback.format_exc()
+    logging.getLogger("mcp-server").error(f"Global unhandled error on {request.url.path}: {err_trace}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal Server Error",
+            "message": str(exc),
+            "path": str(request.url.path),
+            "traceback": err_trace,
+        },
+    )
+
+
+# Ensure both project root and 'api' directory are in sys.path
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(CURRENT_DIR)
+for p in [CURRENT_DIR, ROOT_DIR]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+_startup_error: str | None = None
+
+try:
+    from src import db
+    from src.auth import UserContext, get_current_user
+    from src.config import get_public_url, settings
+    from src.mcp_handler import (
+        MCP_PROTOCOL_VERSION,
+        active_sessions,
+        process_jsonrpc_request,
+        session_users,
+        sse_event_stream,
+    )
+
+    logging.basicConfig(level=logging.INFO if not settings.DEBUG else logging.DEBUG)
+    logger = logging.getLogger("mcp-server")
+except Exception:
+    _startup_error = traceback.format_exc()
+    logger = logging.getLogger("mcp-server")
+    logger.error(f"Startup import error: {_startup_error}")
+
+
 @app.get("/")
 @app.get("/api")
 @app.get("/api/")
@@ -56,7 +83,20 @@ app.add_middleware(
 @app.get("/api/index.py")
 async def root():
     """Server info and diagnostic status."""
-    db_status = await db.check_connection()
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "Startup initialization failed",
+                "traceback": _startup_error,
+            },
+        )
+
+    try:
+        db_status = await db.check_connection()
+    except Exception as e:
+        db_status = {"connected": False, "error": str(e)}
+
     return {
         "name": "Enterprise MySQL Analytics MCP Server",
         "public_url": get_public_url(),
@@ -86,7 +126,20 @@ async def root():
 @app.get("/api/health")
 async def health():
     """Health check endpoint for uptime monitoring."""
-    db_status = await db.check_connection()
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "degraded",
+                "error": "Startup error",
+                "traceback": _startup_error,
+            },
+        )
+    try:
+        db_status = await db.check_connection()
+    except Exception as e:
+        db_status = {"connected": False, "error": str(e)}
+
     return {
         "status": "healthy" if db_status.get("connected") else "degraded",
         "database": db_status,
@@ -106,6 +159,12 @@ async def handle_stateless_mcp(
     Direct JSON-RPC 2.0 endpoint for MCP.
     Publicly accessible, stateless, zero session drop risk on Vercel.
     """
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Startup error", "traceback": _startup_error},
+        )
+
     if isinstance(request, list):
         results = []
         for req in request:
@@ -133,6 +192,12 @@ async def handle_sse(
     Server-Sent Events connection endpoint.
     Publicly accessible.
     """
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Startup error", "traceback": _startup_error},
+        )
+
     session_id = str(uuid.uuid4())
     logger.info(f"Opening public SSE session {session_id} for {user.username}")
 
@@ -159,6 +224,12 @@ async def handle_messages(
     """
     Receives JSON-RPC requests sent to an SSE session.
     """
+    if _startup_error is not None:
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Startup error", "traceback": _startup_error},
+        )
+
     payload = await request.json()
 
     active_user = user
