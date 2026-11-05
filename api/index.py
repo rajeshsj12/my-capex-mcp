@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import sys
@@ -18,7 +19,7 @@ app = FastAPI(
     version="2.0.0",
 )
 
-# Enable CORS for all clients (Claude Desktop, Cursor, Web Agents)
+# Enable CORS for all clients (Claude Desktop, Cursor, Web Agents, OpenAI, Copilot)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,7 +36,9 @@ async def global_exception_handler(request: Request, exc: Exception):
     instead of an opaque Vercel 500 FUNCTION_INVOCATION_FAILED.
     """
     err_trace = traceback.format_exc()
-    logging.getLogger("mcp-server").error(f"Global unhandled error on {request.url.path}: {err_trace}")
+    logging.getLogger("mcp-server").error(
+        f"Global unhandled error on {request.url.path}: {err_trace}"
+    )
     return JSONResponse(
         status_code=500,
         content={
@@ -76,13 +79,38 @@ except Exception:
     logger.error(f"Startup import error: {_startup_error}")
 
 
-@app.get("/")
-@app.get("/api")
-@app.get("/api/")
-@app.get("/api/index")
-@app.get("/api/index.py")
-async def root():
-    """Server info and diagnostic status."""
+async def _extract_json_body(request: Request) -> Any:
+    """Safely extract JSON body if present, or return None."""
+    try:
+        body_bytes = await request.body()
+        if not body_bytes or not body_bytes.strip():
+            return None
+        return json.loads(body_bytes)
+    except Exception:
+        return None
+
+
+@app.api_route("/", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/index", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/index.py", methods=["GET", "POST", "HEAD", "OPTIONS"])
+async def root(request: Request, user: UserContext = Depends(get_current_user)):
+    """
+    Root endpoint supporting GET, POST, HEAD, and OPTIONS.
+    Handles discovery metadata, connector validation, and direct JSON-RPC MCP calls.
+    """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     if _startup_error is not None:
         return JSONResponse(
             status_code=500,
@@ -92,6 +120,28 @@ async def root():
             },
         )
 
+    # Check if client sent an MCP JSON-RPC call directly to root /
+    if request.method == "POST":
+        body = await _extract_json_body(request)
+        if isinstance(body, dict) and "jsonrpc" in body:
+            res = await process_jsonrpc_request(body, user)
+            if res is None:
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return res
+        elif (
+            isinstance(body, list)
+            and len(body) > 0
+            and isinstance(body[0], dict)
+            and "jsonrpc" in body[0]
+        ):
+            results = []
+            for req in body:
+                r = await process_jsonrpc_request(req, user)
+                if r is not None:
+                    results.append(r)
+            return results
+
+    # Return metadata for GET, HEAD, or non-JSON-RPC POST
     try:
         db_status = await db.check_connection()
     except Exception as e:
@@ -102,6 +152,7 @@ async def root():
         "public_url": get_public_url(),
         "status": "online",
         "access": "Public (No authentication required)",
+        "auth": "none",
         "protocolVersion": MCP_PROTOCOL_VERSION,
         "environment": settings.ENVIRONMENT,
         "database": db_status,
@@ -122,10 +173,21 @@ async def root():
     }
 
 
-@app.get("/health")
-@app.get("/api/health")
-async def health():
+@app.api_route("/health", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/health", methods=["GET", "POST", "HEAD", "OPTIONS"])
+async def health(request: Request):
     """Health check endpoint for uptime monitoring."""
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     if _startup_error is not None:
         return JSONResponse(
             status_code=500,
@@ -146,44 +208,64 @@ async def health():
     }
 
 
-# -----------------------------------------------------------------------------
-# 1. Stateless HTTP JSON-RPC MCP Endpoint (Vercel Serverless Ready)
-# -----------------------------------------------------------------------------
-@app.post("/mcp")
-@app.post("/api/mcp")
+@app.api_route("/mcp", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/mcp", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def handle_stateless_mcp(
-    request: dict[str, Any] | list[dict[str, Any]],
+    request: Request,
     user: UserContext = Depends(get_current_user),
 ):
     """
-    Direct JSON-RPC 2.0 endpoint for MCP.
-    Publicly accessible, stateless, zero session drop risk on Vercel.
+    Stateless HTTP JSON-RPC 2.0 MCP endpoint.
+    Accepts POST for JSON-RPC 2.0 requests.
+    Accepts GET, HEAD, and OPTIONS for connector status checks and capability discovery (prevents 405 errors).
     """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     if _startup_error is not None:
         return JSONResponse(
             status_code=500,
             content={"error": "Startup error", "traceback": _startup_error},
         )
 
-    if isinstance(request, list):
-        results = []
-        for req in request:
-            res = await process_jsonrpc_request(req, user)
-            if res is not None:
-                results.append(res)
-        return results
-    else:
-        res = await process_jsonrpc_request(request, user)
-        if res is None:
-            return Response(status_code=status.HTTP_204_NO_CONTENT)
-        return res
+    if request.method == "POST":
+        body = await _extract_json_body(request)
+        if isinstance(body, list):
+            results = []
+            for req in body:
+                res = await process_jsonrpc_request(req, user)
+                if res is not None:
+                    results.append(res)
+            return results
+        elif isinstance(body, dict) and "jsonrpc" in body:
+            res = await process_jsonrpc_request(body, user)
+            if res is None:
+                return Response(status_code=status.HTTP_204_NO_CONTENT)
+            return res
+
+    # GET, HEAD, or non-JSON-RPC POST: Return MCP endpoint discovery info
+    return {
+        "name": "Enterprise MySQL Analytics MCP Server",
+        "status": "online",
+        "endpoint": "/mcp",
+        "transport": "HTTP POST (JSON-RPC 2.0)",
+        "access": "Public (No authentication required)",
+        "auth": "none",
+        "protocolVersion": MCP_PROTOCOL_VERSION,
+        "methods": ["GET", "POST", "HEAD", "OPTIONS"],
+    }
 
 
-# -----------------------------------------------------------------------------
-# 2. SSE Transport Endpoints (Claude Desktop / Cursor)
-# -----------------------------------------------------------------------------
-@app.get("/sse")
-@app.get("/api/sse")
+@app.api_route("/sse", methods=["GET", "HEAD", "OPTIONS"])
+@app.api_route("/api/sse", methods=["GET", "HEAD", "OPTIONS"])
 async def handle_sse(
     request: Request,
     user: UserContext = Depends(get_current_user),
@@ -192,10 +274,27 @@ async def handle_sse(
     Server-Sent Events connection endpoint.
     Publicly accessible.
     """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     if _startup_error is not None:
         return JSONResponse(
             status_code=500,
             content={"error": "Startup error", "traceback": _startup_error},
+        )
+
+    if request.method == "HEAD":
+        return Response(
+            status_code=200,
+            headers={"Content-Type": "text/event-stream"},
         )
 
     session_id = str(uuid.uuid4())
@@ -214,8 +313,8 @@ async def handle_sse(
     )
 
 
-@app.post("/messages")
-@app.post("/api/messages")
+@app.api_route("/messages", methods=["GET", "POST", "HEAD", "OPTIONS"])
+@app.api_route("/api/messages", methods=["GET", "POST", "HEAD", "OPTIONS"])
 async def handle_messages(
     request: Request,
     sessionId: str | None = None,
@@ -224,13 +323,33 @@ async def handle_messages(
     """
     Receives JSON-RPC requests sent to an SSE session.
     """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, HEAD, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+
     if _startup_error is not None:
         return JSONResponse(
             status_code=500,
             content={"error": "Startup error", "traceback": _startup_error},
         )
 
-    payload = await request.json()
+    if request.method != "POST":
+        return {
+            "status": "online",
+            "endpoint": "/messages",
+            "transport": "HTTP POST",
+            "access": "Public (No authentication required)",
+            "auth": "none",
+        }
+
+    payload = await _extract_json_body(request) or {}
 
     active_user = user
     if sessionId and sessionId in session_users:
@@ -248,3 +367,40 @@ async def handle_messages(
     if response_payload is not None:
         return JSONResponse(content=response_payload)
     return Response(status_code=status.HTTP_202_ACCEPTED)
+
+
+@app.api_route(
+    "/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"],
+)
+async def catch_all_fallback(request: Request):
+    """
+    Fallback route to ensure no method or path returns 405 or 404 when probed by automated connectors.
+    """
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Allow": "*",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "*",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={
+            "name": "Enterprise MySQL Analytics MCP Server",
+            "status": "online",
+            "path": str(request.url.path),
+            "method": request.method,
+            "access": "Public (No authentication required)",
+            "auth": "none",
+            "endpoints": {
+                "root": "/",
+                "stateless_mcp": "/mcp",
+                "sse_transport": "/sse",
+                "health": "/health",
+            },
+        },
+    )
